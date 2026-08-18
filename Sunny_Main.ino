@@ -1,14 +1,16 @@
 /*
-Main For Sunny the robots
+Main.ino For Sunny the robot
+Sunny can run autonomously, as well as be controlled remotely via bluetooth functionality
 */
 
+#include <math.h>
 #include <Servo.h>
 #include <Wire.h>
 
 int servo_P = 11;
 int trig = 13;
 int echo = 12;
-
+byte incomingByte;
 
 class Motor_Control{
 
@@ -81,18 +83,18 @@ class Motor_Control{
       stop();
     }
     
-    void car_forward(int speed=200){
+    void car_forward(int speedR=200, int speedL=200){
       // NOTE: Speed is from scale 0 to 255
 
       // makes the right side go forward (P --> N)
       digitalWrite(right_P, HIGH);
       digitalWrite(right_N, LOW);
-      analogWrite(PWM_R, speed); // Speed scale 0-255
+      analogWrite(PWM_R, speedR); // Speed scale 0-255
 
       // makes the left side go forward (P --> N)
       digitalWrite(left_P, HIGH);
       digitalWrite(left_N, LOW);
-      analogWrite(PWM_L, speed); // Speed scale 0-255
+      analogWrite(PWM_L, speedL); // Speed scale 0-255
     }
 
     void car_backward(int speed=200){
@@ -272,7 +274,7 @@ class Obstacle_Avoidance{
         max_Dist = ultra_Sonic;
         max_Angle = angle;
       }
-      Serial.println(i);
+      // Serial.println(i);
       servo.write(angle);
       //delay(1);
     }
@@ -374,7 +376,114 @@ class MPU650_MotionTracking{
     gyro_Data[0] = gyro_x;
     gyro_Data[1] = gyro_y;
     gyro_Data[2] = gyro_z;
+    // Serial.println(gyro_Data[0]);
+    // Serial.println(gyro_Data[1]);
+    Serial.println(gyro_Data[2]);
 
+  }
+
+};
+
+class PID{
+  private:
+    unsigned previous_Time = 0;
+    float Kp = 0;
+    float Ki = 0;
+    float Kd = 0;
+    float desired_Val;
+
+    float integral = 0;
+    float old_eT = 0;
+  
+  public:
+
+  PID(float ideal_Val){
+    desired_Val = ideal_Val;
+  }
+
+  float pid_Output(float kp, float ki, float kd, float actual_Val){
+    Kp = kp;
+    Ki = ki;
+    Kd = kd;
+    unsigned current_Time = millis();
+
+    float dt = (current_Time - previous_Time)/1000.0;
+    if (dt <= 0){
+      return 0;
+    }
+    float eT = desired_Val - actual_Val;
+
+    float P = Kp * eT;
+    integral += eT * dt;
+    float I = Ki * integral;
+    float derivative = (eT - old_eT) / dt;
+    float D = Kd * derivative;
+
+    float pid = P + I + D;
+    previous_Time = current_Time;
+    old_eT = eT;
+    return pid;
+  }
+};
+
+class BlueTooth{
+  private:
+    Motor_Control motors;
+  public:
+
+  void pid_Blu(float &kp, float &ki, float &kd){
+    char weight;
+    // float kp = Kp;
+    // float ki = Ki;
+    // float kd = Kd;
+    if(Serial.available() > 0){
+      weight = Serial.read();
+      Serial.println("Controller Variable: " + String(weight));
+      switch(weight){
+        case 'p':
+          do{
+            kp = Serial.parseFloat();
+          }while(Serial.available() == 0);
+          Serial.println("NEW PROPORTIONAL VALUE: " + String(kp));
+          break;
+        case 'i':
+          do{
+            ki = Serial.parseFloat();
+          }while(Serial.available() == 0);
+          Serial.println("NEW INTEGRAL VALUE: " + String(ki));
+          break;
+        case 'd':
+          do{
+            kd = Serial.parseFloat();
+          }while(Serial.available() == 0);
+          Serial.println("NEW DERIVATIVE VALUE: " + String(kd));
+          break;
+      }
+    }
+  }
+
+  void remote_Control(int &speed){
+    char command = Serial.read();
+    switch(command){
+      case 'V':
+        speed = Serial.read();
+        break;
+      case 'F':
+        motors.car_forward(speed, speed);
+        break;
+      case 'B':
+        motors.car_backward(speed);
+        break;
+      case 'L':
+        motors.car_left(speed);
+        break;
+      case 'R':
+        motors.car_right(speed);
+      default:
+        Serial.println("Car STOP");
+        motors.stop();
+        break;
+    }
   }
 
 };
@@ -385,16 +494,23 @@ Motor_Control motors;
 Sensors sensor;
 Obstacle_Avoidance avoid;
 MPU650_MotionTracking motionT;
+BlueTooth blu;
+PID pid(0);
+
 
 void setup() {
-  // put your setup code here, to run once:
+  /* 
+  Sunny Startup Routine
+  This test the Ultra-sonic servo directions and 
+  initializes the motor and sensors.
+  */
   motors.motor_Setup();
   sensor.sensors_Setup();
   avoid.avoidance_Setup(servo_P);
   motionT.motionTracking_setup();
   
 
-  Serial.begin(115200);
+  Serial.begin(9600);
   Serial.println("TERMINAL RESET HERE");
   
   float valx = motionT.x_Offset;
@@ -405,36 +521,57 @@ void setup() {
   Serial.println(valz);
 
   delay(2000);
+  Serial.println("The PID Bluetooth control is:\np## = Proportional Value\ni## = Integral Value\nd## = Derivative Value");
 }
 
-byte incomingByte;
 
-int speed = 150;
+int speed = 100;
 float gyro_Data[3];
-void loop() {
-  Serial.println("Available: ");
-    Serial.println(Serial.available());
-  while (Serial.available() > 0) {
-    // read the incoming byte:
-    incomingByte = Serial.read();
+char weight;
+float kp = 15.0;
+float ki = 2.0;
+float kd = 0.2;
 
-    // say what you got:
-    Serial.print("I received: ");
-    Serial.println(incomingByte);
+
+void loop() {
+  Serial.println("Change Mode?");
+  if(Serial.available() > 0){
+    String mode = Serial.readString();
+    while(mode == 'remote'){       // bluetooth remote capability
+      Serial.println("Remote Control Active");
+      blu.remote_Control(speed);
+      mode = Serial.readString();
+    }
+    if(mode == 'sunny'){        // autonomous capabality
+      Serial.println("PID Tuning Active");
+      blu.pid_Blu(kp,ki,kd);    // capability to manually change PID values via bluetooth functionality between phone and robot
+    }
   }
 
-  // Serial.println("VALUES PRINTING");
-  
-  // motionT.gyroScope(gyro_Data);
+  avoid.obstacle_Avoid();
+  motors.car_forward(speed,speed);
+  motionT.gyroScope(gyro_Data);
+
+  // MANUAL PID TUNING
+  float pid_Out = pid.pid_Output(kp,ki,kd,gyro_Data[2]);
+  Serial.print("\nP: "+String(kp)+"\nI: "+String(ki)+"\nD: "+String(kd)+"\n");
+  delay(1000);
+  if(gyro_Data[2] < 0){   // if the car drifts right
+    int L_Speed = abs(speed - pid_Out);
+    motors.car_forward(speed, L_Speed);
+  }else{    // if the car drifts left
+    int R_Speed = abs(speed - pid_Out);
+    motors.car_forward(R_Speed, speed);
+  }
   
   // Serial.println(gyro_Data[0]);
   // Serial.println(gyro_Data[1]);
-  // Serial.println(gyro_Data[2]);
-  // delay(500);
 
-  // motors.car_forward(speed);
-  // avoid.obstacle_Avoid();
-  // motors.car_forward(speed);
+  Serial.println("GYRO SCOPE YAW(z) VALUE:");
+  Serial.println(gyro_Data[2]);
+  Serial.println("PID CORRECTION VALUE:");
+  Serial.println(pid_Out);
+  delay(1000);
 
 }
 

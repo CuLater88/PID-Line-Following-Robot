@@ -8,7 +8,8 @@ Sunny is an autonomous robotics platform developed from scratch using an Arduino
 TBD
 
 ## Demo
-TBD
+https://github.com/user-attachments/assets/2707f684-55a4-4365-ab3f-7949b00967c6
+
 
 ## Currently Working
 
